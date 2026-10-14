@@ -1,0 +1,43 @@
+name: ios-font-test
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Pick iPhone simulator
+        id: sim
+        run: |
+          xcrun simctl list devices available -j > devices.json
+          UDID=$(python3 - <<'PY'
+          import json, re
+          d = json.load(open("devices.json"))["devices"]
+          def ver(k):
+              m = re.search(r"iOS-(\d+)-(\d+)", k)
+              return tuple(map(int, m.groups())) if m else (0, 0)
+          keys = sorted([k for k in d if "iOS" in k], key=ver)
+          for k in reversed(keys):
+              phones = [x for x in d[k] if x["name"].startswith("iPhone")]
+              if phones:
+                  print(phones[0]["udid"]); break
+          PY
+          )
+          echo "udid=$UDID" >> "$GITHUB_OUTPUT"
+      - name: Run probe
+        run: |
+          set -o pipefail
+          SCHEME=$(xcodebuild -list -json | python3 -c "import sys,json; d=json.load(sys.stdin); s=d.get('workspace', d.get('project', {})).get('schemes', []); print(next((x for x in s if x.endswith('-Package')), s[0]))")
+          echo "Scheme: $SCHEME"
+          xcodebuild test -scheme "$SCHEME" -destination "id=${{ steps.sim.outputs.udid }}" 2>&1 | tee build.log
+      - name: Summary
+        if: always()
+        run: |
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          grep 'FONTTEST|' build.log >> "$GITHUB_STEP_SUMMARY" || echo 'no FONTTEST lines' >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
